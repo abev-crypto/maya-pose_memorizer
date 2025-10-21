@@ -1,6 +1,7 @@
 # Maya PoseMemorizer
 Maya Script  
 Simple Pose copy & paste tool
+勝手にMAYA2024で動くように修正版
 
 ![PoseMemoraizer_anim](https://user-images.githubusercontent.com/20962065/93213976-874c3280-f79f-11ea-82c3-4176d4b22668.gif)
 
@@ -32,7 +33,7 @@ pose_memorizer.run()
 ## Author
 
 * shita-parap
-* Twitter : https://twitter.com/shita_parap
+~~* Twitter : https://twitter.com/shita_parap~~
 
 
 ## License
