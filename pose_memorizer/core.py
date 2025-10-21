@@ -71,13 +71,29 @@ class PoseMemorizer(object):
             pose = change_pose
 
         target_pose = {}
+        sel_transforms = self._get_sel_transform()
+        if sel_transforms:
+            if namespace is True:
+                sel_trans = set(sel_transforms)
+                target_pose = {n: m for n, m in pose.items() if n in sel_trans}
+            else:
+                sel_trans = {basename(t): t for t in sel_transforms}
+                target_pose = {sel_trans.get(basename(n)): m for n, m in pose.items()
+                               if sel_trans.get(basename(n)) is not None}
+            return target_pose
+
         if namespace is True:
-            sel_trans = set(self._get_sel_transform())
-            target_pose = {n: m for n, m in pose.items() if n in sel_trans}
+            target_pose = {n: m for n, m in pose.items() if cmds.objExists(n)}
         else:
-            sel_trans = {basename(t): t for t in self._get_sel_transform()}
-            target_pose = {sel_trans.get(basename(n)): m for n, m in pose.items()
-                           if sel_trans.get(basename(n)) is not None}
+            pose_by_basename = {}
+            for node_name, parameter in pose.items():
+                pose_by_basename.setdefault(basename(node_name), parameter)
+
+            target_pose = {}
+            for node in cmds.ls(type="transform") or []:
+                pose_parameter = pose_by_basename.get(basename(node))
+                if pose_parameter is not None:
+                    target_pose[node] = pose_parameter
         return target_pose
 
     def _get_sel_transform(self):
