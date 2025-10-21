@@ -76,10 +76,14 @@ class OptionFile(object):
 
             path = func(*args, **kwargs)
 
-            if hasattr(path, "__iter__") is True:
+            # 修正ポイント: 文字列以外のイテラブルのみリスト変換
+            if isinstance(path, str):
+                return unify_path(path)
+            elif hasattr(path, "__iter__"):
                 return [unify_path(p) for p in path]
             else:
-                return unify_path(path)
+                return path
+
         return _wrap
 
     def _check_file_path(self):
@@ -102,14 +106,26 @@ class OptionFile(object):
         return
 
     def load(self):
-        data = {}
-        with open(self._file_path, "r") as f:
-            data = json.load(f)
-        file_version = data.get("version", None)
+        # ディレクトリを作っておく（多言語環境の prefs/ja_JP/prefs も含めて）
+        self._check_file_path()
+
+        # まだファイルがない初回は None を返す
+        if not os.path.exists(self._file_path):
+            return None
+
+        # 破損している/空ファイルでも安全に抜ける
+        try:
+            with open(self._file_path, "r") as f:
+                data = json.load(f)
+        except Exception:
+            return None
+
+        file_version = data.get("version")
         if file_version != self.version:
             return None
 
         return data
+
 
     def save(self):
         data = {"version": self.version}
@@ -297,7 +313,9 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         self.setWidget(widget)
 
         self._option_load()
-        QtWidgets.qApp.aboutToQuit.connect(self._option_save, QtCore.Qt.UniqueConnection)
+        QtWidgets.QApplication.instance().aboutToQuit.connect(
+            self._option_save, QtCore.Qt.UniqueConnection
+            )
         return
 
     def dockCloseEventTriggered(self):
@@ -305,7 +323,9 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         return
 
     def _add_pose(self, pose_data):
-        name = pose_data.keys()[0]
+        # 修正前: name = pose_data.keys()[0]
+        name = list(pose_data.keys())[0]
+
         item = QtWidgets.QListWidgetItem()
         item.setData(QtCore.Qt.DisplayRole, name)
         item.setData(QtCore.Qt.UserRole + 1, pose_data)
@@ -338,7 +358,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         if item is None:
             return
         pose_data = item.data(QtCore.Qt.UserRole + 1)
-        cmds.select(pose_data.keys(), replace=True)
+        cmds.select(list(pose_data.keys()), replace=True)
         return
 
     def _click_memorize(self):
@@ -351,7 +371,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         item = self._get_sel_item()
         if item is None:
             return
-        transform = item.data(QtCore.Qt.UserRole + 1).keys()
+        transform = list(item.data(QtCore.Qt.UserRole + 1).keys())
         pose_data = self.pomezer.get_pose(transform)
         item.setData(QtCore.Qt.UserRole + 1, pose_data)
         return
@@ -424,7 +444,7 @@ class PoseMemorizerMainWindow(object):
             # Restore parent
             mixinPtr = MQtUtil.findControl(self.name)
             wks = MQtUtil.findControl(self.workspace_name)
-            MQtUtil.addWidgetToMayaLayout(long(mixinPtr), long(wks))
+            MQtUtil.addWidgetToMayaLayout(mixinPtr, wks)
 
         # Create New Workspace
         else:
