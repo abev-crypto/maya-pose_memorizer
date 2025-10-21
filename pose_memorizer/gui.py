@@ -249,6 +249,9 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         self.memorize_button = QtWidgets.QPushButton("Memorize", self)
         memorize_button = self.memorize_button
         memorize_button.clicked.connect(Callback(self._click_memorize))
+        memorize_button.setToolTip(
+            "Memorize the current selection. The pose name defaults to PoseF_<CurrentFrame> and can be edited."
+        )
 
         self.update_button = QtWidgets.QPushButton("Update", self)
         update_button = self.update_button
@@ -322,17 +325,20 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         self._option_save()
         return
 
-    def _add_pose(self, pose_data):
+    def _add_pose(self, pose_data, display_name=None):
         # 修正前: name = pose_data.keys()[0]
-        name = list(pose_data.keys())[0]
+        if display_name is None:
+            name = list(pose_data.keys())[0]
+        else:
+            name = display_name
 
         item = QtWidgets.QListWidgetItem()
         item.setData(QtCore.Qt.DisplayRole, name)
         item.setData(QtCore.Qt.UserRole + 1, pose_data)
         item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
         self.pose_list.addItem(item)
-        self.pose_list.clearSelection()
-        return
+        self.pose_list.setCurrentItem(item)
+        return item
 
     def _get_ui_parameter(self):
         reslut = {}
@@ -364,7 +370,10 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
     def _click_memorize(self):
         pose_data = self.pomezer.get_pose()
         if len(pose_data) > 0:
-            self._add_pose(pose_data)
+            current_frame = cmds.currentTime(query=True)
+            default_name = "PoseF_{:g}".format(current_frame)
+            item = self._add_pose(pose_data, default_name)
+            self._edit_item_name(item)
         return
 
     def _click_update(self):
