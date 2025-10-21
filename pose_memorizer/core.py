@@ -205,6 +205,37 @@ class PoseMemorizer(object):
             transform = self._get_sel_transform()
         return self._make_pose_parameter(transform)
 
+    def get_pose_range(self, start_frame, end_frame, transform=None):
+        if transform is None or len(transform) == 0:
+            transform = self._get_sel_transform()
+        if transform is None or len(transform) == 0:
+            return []
+
+        try:
+            key_times = cmds.keyframe(transform, time=(start_frame, end_frame), query=True)
+        except Exception:
+            return []
+        if key_times is None:
+            return []
+
+        frames = sorted(set(key_times))
+        if len(frames) == 0:
+            return []
+
+        current_time = cmds.currentTime(query=True)
+        poses = []
+        cmds.refresh(suspend=True)
+        try:
+            for frame in frames:
+                cmds.currentTime(frame, edit=True)
+                pose = self._make_pose_parameter(transform)
+                poses.append({"frame": frame, "pose": pose})
+        finally:
+            cmds.currentTime(current_time, edit=True)
+            cmds.refresh(suspend=False)
+            cmds.refresh(currentView=True)
+        return poses
+
     def apply_pose(self, pose, mirror, mirror_name, mirror_axis, setkey, namespace):
         cmds.refresh(suspend=True)
         try:
@@ -215,8 +246,36 @@ class PoseMemorizer(object):
                 cmd = self._get_setkey_command(pose_tr)
             else:
                 cmd = self._get_setattr_command(pose_tr)
-            mel.eval(cmd)
+            if cmd:
+                mel.eval(cmd)
         finally:
+            cmds.refresh(suspend=False)
+            cmds.refresh(currentView=True)
+        return
+
+    def apply_pose_sequence(self, poses, mirror, mirror_name, mirror_axis, namespace):
+        if poses is None or len(poses) == 0:
+            return
+
+        current_time = cmds.currentTime(query=True)
+        cmds.refresh(suspend=True)
+        try:
+            for pose_data in sorted(poses, key=lambda x: x.get("frame", 0)):
+                frame = pose_data.get("frame")
+                pose = pose_data.get("pose")
+                if pose is None or len(pose) == 0:
+                    continue
+                if frame is not None:
+                    cmds.currentTime(frame, edit=True)
+                target_pose = self._convert_target_pose(pose, mirror, mirror_name, namespace)
+                pose_tr = self._get_translate_rotate(target_pose, mirror, mirror_axis)
+                if len(pose_tr) == 0:
+                    continue
+                cmd = self._get_setkey_command(pose_tr)
+                if cmd:
+                    mel.eval(cmd)
+        finally:
+            cmds.currentTime(current_time, edit=True)
             cmds.refresh(suspend=False)
             cmds.refresh(currentView=True)
         return

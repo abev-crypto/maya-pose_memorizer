@@ -167,45 +167,42 @@ class HorizontalLine(QtWidgets.QFrame):
 
 
 # -----------------------------------------------------------------------------
-# PoseListWidget
-class PoseListWidget(QtWidgets.QListWidget):
+# PoseTreeWidget
+class PoseTreeWidget(QtWidgets.QTreeWidget):
 
-    itemRightClicked = QtCore.Signal(QtWidgets.QListWidgetItem)
+    itemRightClicked = QtCore.Signal(QtWidgets.QTreeWidgetItem)
 
     def __init__(self, *args, **kwargs):
-        super(PoseListWidget, self).__init__(*args, **kwargs)
-        self.__start_index = None
-        self.__drag_button = None
+        super(PoseTreeWidget, self).__init__(*args, **kwargs)
+        self.__press_item = None
 
-        self.setObjectName(("pose_list"))
-        self.setUniformItemSizes(True)
+        self.setObjectName("pose_tree")
+        self.setColumnCount(1)
+        self.setHeaderHidden(True)
+        self.setIndentation(16)
+        self.setUniformRowHeights(True)
+        self.setAnimated(True)
         self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.setDefaultDropAction(QtCore.Qt.MoveAction)
+        self.setDropIndicatorShown(True)
+        self.viewport().setAcceptDrops(True)
         return
 
     def mousePressEvent(self, event):
-        self.clearSelection()
-        self.__start_index = self.indexAt(event.pos())
-        self.__drag_button = event.button()
-        super(self.__class__, self).mousePressEvent(event)
-        return
-
-    def mouseMoveEvent(self, event):
-        if self.__drag_button == QtCore.Qt.RightButton:
-            index = self.indexAt(event.pos())
-            if index.row() >= 0:
-                self.setSelection(self.rectForIndex(index),
-                                  self.selectionCommand(index))
-        super(self.__class__, self).mouseMoveEvent(event)
+        self.__press_item = self.itemAt(event.pos())
+        super(PoseTreeWidget, self).mousePressEvent(event)
         return
 
     def mouseReleaseEvent(self, event):
+        item = self.itemAt(event.pos())
         if event.button() == QtCore.Qt.RightButton:
-            items = self.selectedItems()
-            if len(items) > 0 and self.__start_index == self.indexAt(event.pos()):
-                self.itemRightClicked.emit(items.pop())
-        self.__start_index = None
-        self.__drag_button = None
-        super(self.__class__, self).mouseReleaseEvent(event)
+            if item is not None and item == self.__press_item:
+                self.setCurrentItem(item)
+                self.itemRightClicked.emit(item)
+        self.__press_item = None
+        super(PoseTreeWidget, self).mouseReleaseEvent(event)
         return
 
 
@@ -261,10 +258,40 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         delete_button = self.delete_button
         delete_button.clicked.connect(self._click_delete)
 
-        self.pose_list = PoseListWidget(self)
+        self.pose_list = PoseTreeWidget(self)
         pose_list = self.pose_list
         pose_list.itemDoubleClicked.connect(self._edit_item_name)
         pose_list.itemRightClicked.connect(self._right_click_item)
+
+        self.new_folder_button = QtWidgets.QPushButton("New Folder", self)
+        new_folder_button = self.new_folder_button
+        new_folder_button.clicked.connect(self._click_new_folder)
+
+        self.delete_tmp_button = QtWidgets.QPushButton("DelTMP", self)
+        delete_tmp_button = self.delete_tmp_button
+        delete_tmp_button.clicked.connect(self._click_delete_tmp)
+
+        self.range_start_spin = QtWidgets.QSpinBox(self)
+        range_start_spin = self.range_start_spin
+        range_start_spin.setRange(-999999, 999999)
+        range_start_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        try:
+            range_start_spin.setValue(int(cmds.playbackOptions(min=True, query=True)))
+        except Exception:
+            range_start_spin.setValue(0)
+
+        self.range_end_spin = QtWidgets.QSpinBox(self)
+        range_end_spin = self.range_end_spin
+        range_end_spin.setRange(-999999, 999999)
+        range_end_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        try:
+            range_end_spin.setValue(int(cmds.playbackOptions(max=True, query=True)))
+        except Exception:
+            range_end_spin.setValue(0)
+
+        self.range_memorize_button = QtWidgets.QPushButton("RangeMemorize", self)
+        range_memorize_button = self.range_memorize_button
+        range_memorize_button.clicked.connect(Callback(self._click_range_memorize))
 
         self.mirror_name_combo = QtWidgets.QComboBox(self)
         mirror_name_combo = self.mirror_name_combo
@@ -293,9 +320,26 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         apply_button.clicked.connect(Callback(self._click_apply))
         apply_button.setFixedHeight(28)
 
-        button_layout.addWidget(memorize_button, 3)
+        folder_layout = QtWidgets.QHBoxLayout(self)
+        folder_layout.setSpacing(4)
+        folder_layout.setContentsMargins(0, 0, 0, 0)
+
+        range_layout = QtWidgets.QHBoxLayout(self)
+        range_layout.setSpacing(4)
+        range_layout.setContentsMargins(0, 0, 0, 0)
+
+        button_layout.addWidget(memorize_button, 2)
         button_layout.addWidget(update_button, 2)
         button_layout.addWidget(delete_button, 1)
+
+        folder_layout.addWidget(new_folder_button)
+        folder_layout.addWidget(delete_tmp_button)
+
+        range_layout.addWidget(QtWidgets.QLabel("Start"))
+        range_layout.addWidget(range_start_spin)
+        range_layout.addWidget(QtWidgets.QLabel("End"))
+        range_layout.addWidget(range_end_spin)
+        range_layout.addWidget(range_memorize_button, 2)
 
         mirror_layout.addWidget(mirror_axis_combo)
         mirror_layout.addWidget(mirror_check)
@@ -304,6 +348,8 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         check_layout.addWidget(namespace_check)
 
         layout.addLayout(button_layout)
+        layout.addLayout(range_layout)
+        layout.addLayout(folder_layout)
         layout.addWidget(pose_list)
         layout.addWidget(mirror_name_combo)
         layout.addLayout(mirror_layout)
@@ -325,18 +371,60 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         self._option_save()
         return
 
-    def _add_pose(self, pose_data, display_name=None):
-        # 修正前: name = pose_data.keys()[0]
+    def _create_folder_item(self, name="New Folder"):
+        item = QtWidgets.QTreeWidgetItem()
+        item.setText(0, name)
+        item.setData(0, QtCore.Qt.UserRole, {"type": "folder"})
+        flags = (QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable |
+                 QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled |
+                 QtCore.Qt.ItemIsDropEnabled)
+        item.setFlags(flags)
+        self.pose_list.addTopLevelItem(item)
+        self.pose_list.setCurrentItem(item)
+        return item
+
+    def _add_pose(self, pose_data, display_name=None, parent=None):
         if display_name is None:
-            name = list(pose_data.keys())[0]
+            if len(pose_data) > 0:
+                name = list(pose_data.keys())[0]
+            else:
+                name = "Pose"
         else:
             name = display_name
 
-        item = QtWidgets.QListWidgetItem()
-        item.setData(QtCore.Qt.DisplayRole, name)
-        item.setData(QtCore.Qt.UserRole + 1, pose_data)
-        item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
-        self.pose_list.addItem(item)
+        if parent is None:
+            item = QtWidgets.QTreeWidgetItem()
+            self.pose_list.addTopLevelItem(item)
+        else:
+            item = QtWidgets.QTreeWidgetItem(parent)
+            parent.setExpanded(True)
+
+        item.setText(0, name)
+        item.setData(0, QtCore.Qt.UserRole, {"type": "pose", "pose": pose_data})
+        flags = (QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable |
+                 QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled)
+        item.setFlags(flags)
+        self.pose_list.setCurrentItem(item)
+        return item
+
+    def _add_range_pose(self, range_data, display_name=None, parent=None):
+        if display_name is None:
+            name = "RangePose"
+        else:
+            name = display_name
+
+        if parent is None:
+            item = QtWidgets.QTreeWidgetItem()
+            self.pose_list.addTopLevelItem(item)
+        else:
+            item = QtWidgets.QTreeWidgetItem(parent)
+            parent.setExpanded(True)
+
+        item.setText(0, name)
+        item.setData(0, QtCore.Qt.UserRole, {"type": "range", "poses": range_data})
+        flags = (QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable |
+                 QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled)
+        item.setFlags(flags)
         self.pose_list.setCurrentItem(item)
         return item
 
@@ -350,29 +438,64 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         return reslut
 
     def _get_sel_item(self):
-        items = self.pose_list.selectedItems()
-        if len(items) == 0:
-            return None
-        return items[0]
+        return self.pose_list.currentItem()
 
-    def _edit_item_name(self, item):
-        self.pose_list.editItem(item)
-        return
-
-    def _right_click_item(self):
-        item = self._get_sel_item()
+    def _edit_item_name(self, item, column=None):
         if item is None:
             return
-        pose_data = item.data(QtCore.Qt.UserRole + 1)
+        self.pose_list.editItem(item, 0)
+        return
+
+    def _right_click_item(self, item=None):
+        if item is None:
+            item = self._get_sel_item()
+        if item is None:
+            return
+        data = item.data(0, QtCore.Qt.UserRole) or {}
+        if data.get("type") == "pose":
+            pose_data = data.get("pose", {})
+        elif data.get("type") == "range":
+            poses = data.get("poses", [])
+            pose_data = poses[0].get("pose", {}) if len(poses) > 0 else {}
+        else:
+            pose_data = {}
+        if len(pose_data) == 0:
+            return
         cmds.select(list(pose_data.keys()), replace=True)
+        return
+
+    def _get_insert_parent(self):
+        current = self.pose_list.currentItem()
+        if current is None:
+            return None
+        data = current.data(0, QtCore.Qt.UserRole) or {}
+        if data.get("type") == "folder":
+            return current
+        parent = current.parent()
+        if parent is not None:
+            return parent
+        return None
+
+    def _remove_item(self, item):
+        parent = item.parent()
+        if parent is None:
+            index = self.pose_list.indexOfTopLevelItem(item)
+            self.pose_list.takeTopLevelItem(index)
+        else:
+            parent.removeChild(item)
+        del(item)
         return
 
     def _click_memorize(self):
         pose_data = self.pomezer.get_pose()
         if len(pose_data) > 0:
             current_frame = cmds.currentTime(query=True)
-            default_name = "PoseF_{:g}".format(current_frame)
-            item = self._add_pose(pose_data, default_name)
+            parent = self._get_insert_parent()
+            if parent is None:
+                default_name = "TMPPoseF_{:g}".format(current_frame)
+            else:
+                default_name = "PoseF_{:g}".format(current_frame)
+            item = self._add_pose(pose_data, default_name, parent)
             self._edit_item_name(item)
         return
 
@@ -380,36 +503,82 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         item = self._get_sel_item()
         if item is None:
             return
-        transform = list(item.data(QtCore.Qt.UserRole + 1).keys())
+        data = item.data(0, QtCore.Qt.UserRole) or {}
+        if data.get("type") != "pose":
+            return
+        transform = list(data.get("pose", {}).keys())
         pose_data = self.pomezer.get_pose(transform)
-        item.setData(QtCore.Qt.UserRole + 1, pose_data)
+        item.setData(0, QtCore.Qt.UserRole, {"type": "pose", "pose": pose_data})
         return
 
     def _click_delete(self):
         item = self._get_sel_item()
         if item is None:
             return
-        self.pose_list.takeItem(self.pose_list.row(item))
-        del(item)
+        self._remove_item(item)
         return
 
     def _click_apply(self):
         item = self._get_sel_item()
         if item is None:
             return
-        pose_data = item.data(QtCore.Qt.UserRole + 1)
+        data = item.data(0, QtCore.Qt.UserRole) or {}
+        item_type = data.get("type")
         ui_parameter = self._get_ui_parameter()
         mirror_name = ui_parameter["mirror_name"]
         mirror_axis = ui_parameter["mirror_axis"]
         mirror = ui_parameter["mirror"]
         setkey = ui_parameter["setkey"]
         namespace = ui_parameter["namespace"]
-        self.pomezer.apply_pose(pose=pose_data,
-                                mirror=mirror,
-                                mirror_name=mirror_name,
-                                mirror_axis=mirror_axis,
-                                setkey=setkey,
-                                namespace=namespace)
+        if item_type == "pose":
+            pose_data = data.get("pose", {})
+            self.pomezer.apply_pose(pose=pose_data,
+                                    mirror=mirror,
+                                    mirror_name=mirror_name,
+                                    mirror_axis=mirror_axis,
+                                    setkey=setkey,
+                                    namespace=namespace)
+        elif item_type == "range":
+            range_data = data.get("poses", [])
+            if len(range_data) == 0:
+                return
+            self.pomezer.apply_pose_sequence(poses=range_data,
+                                             mirror=mirror,
+                                             mirror_name=mirror_name,
+                                             mirror_axis=mirror_axis,
+                                             namespace=namespace)
+        return
+
+    def _click_new_folder(self):
+        item = self._create_folder_item()
+        self._edit_item_name(item)
+        return
+
+    def _click_delete_tmp(self):
+        count = self.pose_list.topLevelItemCount()
+        for index in reversed(range(count)):
+            item = self.pose_list.topLevelItem(index)
+            data = item.data(0, QtCore.Qt.UserRole) or {}
+            if data.get("type") != "folder":
+                removed_item = self.pose_list.takeTopLevelItem(index)
+                del(removed_item)
+        return
+
+    def _click_range_memorize(self):
+        start_frame = self.range_start_spin.value()
+        end_frame = self.range_end_spin.value()
+        if end_frame < start_frame:
+            start_frame, end_frame = end_frame, start_frame
+        pose_range = self.pomezer.get_pose_range(start_frame, end_frame)
+        if len(pose_range) == 0:
+            return
+        parent = self._get_insert_parent()
+        if parent is None:
+            default_name = "TMPRange_{:g}_{:g}".format(start_frame, end_frame)
+        else:
+            default_name = "Range_{:g}_{:g}".format(start_frame, end_frame)
+        item = self._add_range_pose(pose_range, default_name, parent)
+        self._edit_item_name(item)
         return
 
     def _option_load(self):
@@ -435,7 +604,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
 class PoseMemorizerMainWindow(object):
 
     HEIGHT = 360
-    WIDTH = 280
+    WIDTH = 320
 
     _windows_name = WINDOWS_NAME
     _windows_title = WINDOWS_NAME
