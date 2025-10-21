@@ -191,7 +191,11 @@ class PoseTreeWidget(QtWidgets.QTreeWidget):
         return
 
     def mousePressEvent(self, event):
-        self.__press_item = self.itemAt(event.pos())
+        item = self.itemAt(event.pos())
+        self.__press_item = item
+        if item is None and event.button() == QtCore.Qt.LeftButton:
+            self.clearSelection()
+            self.setCurrentIndex(QtCore.QModelIndex())
         super(PoseTreeWidget, self).mousePressEvent(event)
         return
 
@@ -289,6 +293,10 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         except Exception:
             range_end_spin.setValue(0)
 
+        self.range_collect_button = QtWidgets.QPushButton("GetTimeRange", self)
+        range_collect_button = self.range_collect_button
+        range_collect_button.clicked.connect(self._click_collect_time_range)
+
         self.range_memorize_button = QtWidgets.QPushButton("RangeMemorize", self)
         range_memorize_button = self.range_memorize_button
         range_memorize_button.clicked.connect(Callback(self._click_range_memorize))
@@ -339,6 +347,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         range_layout.addWidget(range_start_spin)
         range_layout.addWidget(QtWidgets.QLabel("End"))
         range_layout.addWidget(range_end_spin)
+        range_layout.addWidget(range_collect_button)
         range_layout.addWidget(range_memorize_button, 2)
 
         mirror_layout.addWidget(mirror_axis_combo)
@@ -579,6 +588,36 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
             default_name = "Range_{:g}_{:g}".format(start_frame, end_frame)
         item = self._add_range_pose(pose_range, default_name, parent)
         self._edit_item_name(item)
+        return
+
+    def _click_collect_time_range(self):
+        start_frame = None
+        end_frame = None
+        try:
+            playback_slider = mel.eval("$tmpVar=$gPlayBackSlider;")
+            if playback_slider:
+                is_range = cmds.timeControl(playback_slider, query=True, rangeVisible=True)
+                if is_range:
+                    range_values = cmds.timeControl(playback_slider, query=True, rangeArray=True)
+                    if range_values and len(range_values) >= 2:
+                        start_frame, end_frame = range_values[:2]
+        except Exception:
+            start_frame = None
+            end_frame = None
+
+        if start_frame is None or end_frame is None:
+            try:
+                start_frame = cmds.playbackOptions(min=True, query=True)
+                end_frame = cmds.playbackOptions(max=True, query=True)
+            except Exception:
+                return
+
+        start_frame = int(round(start_frame))
+        end_frame = int(round(end_frame))
+        if end_frame < start_frame:
+            start_frame, end_frame = end_frame, start_frame
+        self.range_start_spin.setValue(start_frame)
+        self.range_end_spin.setValue(end_frame)
         return
 
     def _option_load(self):

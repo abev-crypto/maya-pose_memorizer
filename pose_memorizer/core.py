@@ -258,15 +258,21 @@ class PoseMemorizer(object):
             return
 
         current_time = cmds.currentTime(query=True)
+        sorted_poses = sorted(poses, key=lambda x: x.get("frame", 0))
+        frames = [pose.get("frame") for pose in sorted_poses if pose.get("frame") is not None]
+        frame_offset = 0
+        if frames:
+            frame_offset = current_time - frames[0]
+
         cmds.refresh(suspend=True)
         try:
-            for pose_data in sorted(poses, key=lambda x: x.get("frame", 0)):
+            for pose_data in sorted_poses:
                 frame = pose_data.get("frame")
                 pose = pose_data.get("pose")
                 if pose is None or len(pose) == 0:
                     continue
                 if frame is not None:
-                    cmds.currentTime(frame, edit=True)
+                    cmds.currentTime(frame + frame_offset, edit=True)
                 target_pose = self._convert_target_pose(pose, mirror, mirror_name, namespace)
                 pose_tr = self._get_translate_rotate(target_pose, mirror, mirror_axis)
                 if len(pose_tr) == 0:
