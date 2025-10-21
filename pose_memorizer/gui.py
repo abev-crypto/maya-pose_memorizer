@@ -19,6 +19,7 @@ from PySide2 import QtWidgets
 
 import pose_memorizer as pomezer
 import pose_memorizer.core as pomezer_core
+from maya.api import OpenMaya as om2
 
 
 # -----------------------------------------------------------------------------
@@ -216,11 +217,15 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
 
     MIRRORNAME = ["Left : Right", "left : right", "_L : _R", "_l : _r"]
     MIRRORAXIS = ["X", "Y", "Z"]
+    SCENE_FILE_VERSION = 1
 
     def __init__(self, parent=None):
         super(PoseMemorizerDockableWidget, self).__init__(parent=parent)
 
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+
+        self._is_loading_scene_data = False
+        self._warned_scene_unsaved = False
 
         self.pomezer = pomezer_core.PoseMemorizer()
         self.op_file = OptionFile()
@@ -258,6 +263,10 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         update_button = self.update_button
         update_button.clicked.connect(self._click_update)
 
+        self.load_button = QtWidgets.QPushButton("Load", self)
+        load_button = self.load_button
+        load_button.clicked.connect(self._click_load)
+
         self.delete_button = QtWidgets.QPushButton("Delete", self)
         delete_button = self.delete_button
         delete_button.clicked.connect(self._click_delete)
@@ -266,6 +275,10 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         pose_list = self.pose_list
         pose_list.itemDoubleClicked.connect(self._edit_item_name)
         pose_list.itemRightClicked.connect(self._right_click_item)
+        pose_list.itemChanged.connect(self._tree_item_changed)
+        pose_list.model().rowsInserted.connect(self._tree_structure_changed)
+        pose_list.model().rowsRemoved.connect(self._tree_structure_changed)
+        pose_list.model().rowsMoved.connect(self._tree_structure_changed)
 
         self.new_folder_button = QtWidgets.QPushButton("New Folder", self)
         new_folder_button = self.new_folder_button
@@ -338,6 +351,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
 
         button_layout.addWidget(memorize_button, 2)
         button_layout.addWidget(update_button, 2)
+        button_layout.addWidget(load_button, 2)
         button_layout.addWidget(delete_button, 1)
 
         folder_layout.addWidget(new_folder_button)
@@ -371,6 +385,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         self.setWidget(widget)
 
         self._option_load()
+        self._load_scene_pose_data()
         QtWidgets.QApplication.instance().aboutToQuit.connect(
             self._option_save, QtCore.Qt.UniqueConnection
             )
@@ -380,19 +395,24 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         self._option_save()
         return
 
-    def _create_folder_item(self, name="New Folder"):
-        item = QtWidgets.QTreeWidgetItem()
+    def _create_folder_item(self, name="New Folder", parent=None, select=True):
+        if parent is None:
+            item = QtWidgets.QTreeWidgetItem()
+            self.pose_list.addTopLevelItem(item)
+        else:
+            item = QtWidgets.QTreeWidgetItem(parent)
+            parent.setExpanded(True)
         item.setText(0, name)
         item.setData(0, QtCore.Qt.UserRole, {"type": "folder"})
         flags = (QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable |
                  QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled |
                  QtCore.Qt.ItemIsDropEnabled)
         item.setFlags(flags)
-        self.pose_list.addTopLevelItem(item)
-        self.pose_list.setCurrentItem(item)
+        if select:
+            self.pose_list.setCurrentItem(item)
         return item
 
-    def _add_pose(self, pose_data, display_name=None, parent=None):
+    def _add_pose(self, pose_data, display_name=None, parent=None, select=True):
         if display_name is None:
             if len(pose_data) > 0:
                 name = list(pose_data.keys())[0]
@@ -413,10 +433,11 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         flags = (QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable |
                  QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled)
         item.setFlags(flags)
-        self.pose_list.setCurrentItem(item)
+        if select:
+            self.pose_list.setCurrentItem(item)
         return item
 
-    def _add_range_pose(self, range_data, display_name=None, parent=None):
+    def _add_range_pose(self, range_data, display_name=None, parent=None, select=True):
         if display_name is None:
             name = "RangePose"
         else:
@@ -434,7 +455,8 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         flags = (QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable |
                  QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled)
         item.setFlags(flags)
-        self.pose_list.setCurrentItem(item)
+        if select:
+            self.pose_list.setCurrentItem(item)
         return item
 
     def _get_ui_parameter(self):
@@ -445,6 +467,200 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         reslut["setkey"] = self.setkey_check.isChecked()
         reslut["namespace"] = self.namespace_check.isChecked()
         return reslut
+
+    def _get_scene_file_path(self):
+        try:
+            scene_path = cmds.file(query=True, sn=True)
+        except Exception:
+            scene_path = ""
+        return scene_path or ""
+
+    def _get_scene_json_path(self):
+        scene_path = self._get_scene_file_path()
+        if scene_path == "":
+            return None
+        base_name, _ = os.path.splitext(scene_path)
+        return base_name + "_PoseMemorizer.json"
+
+    def _serialize_pose_data(self, pose_data):
+        result = {}
+        for node, parameter in (pose_data or {}).items():
+            translate = parameter.get("translate") or (0.0, 0.0, 0.0)
+            rotate = parameter.get("rotate")
+            if isinstance(rotate, om2.MQuaternion):
+                rotate_values = [rotate.x, rotate.y, rotate.z, rotate.w]
+            elif isinstance(rotate, (list, tuple)) and len(rotate) == 4:
+                rotate_values = [float(v) for v in rotate]
+            elif rotate is None:
+                rotate_values = [0.0, 0.0, 0.0, 1.0]
+            else:
+                rotate_values = [0.0, 0.0, 0.0, 1.0]
+            try:
+                translate_values = [float(v) for v in translate]
+            except Exception:
+                translate_values = [0.0, 0.0, 0.0]
+            result[node] = {
+                "translate": translate_values,
+                "rotate": rotate_values,
+            }
+        return result
+
+    def _deserialize_pose_data(self, pose_data):
+        result = {}
+        for node, parameter in (pose_data or {}).items():
+            translate = parameter.get("translate") or [0.0, 0.0, 0.0]
+            rotate = parameter.get("rotate")
+            if isinstance(rotate, (list, tuple)) and len(rotate) == 4:
+                try:
+                    rotate_qua = om2.MQuaternion(*[float(v) for v in rotate])
+                except Exception:
+                    rotate_qua = om2.MQuaternion()
+            elif isinstance(rotate, om2.MQuaternion):
+                rotate_qua = rotate
+            else:
+                rotate_qua = om2.MQuaternion()
+            try:
+                translate_tuple = tuple(float(v) for v in translate)
+            except Exception:
+                translate_tuple = (0.0, 0.0, 0.0)
+            result[node] = {
+                "translate": translate_tuple,
+                "rotate": rotate_qua,
+            }
+        return result
+
+    def _serialize_tree_item(self, item):
+        data = item.data(0, QtCore.Qt.UserRole) or {}
+        item_data = {
+            "name": item.text(0),
+            "type": data.get("type"),
+        }
+        item_type = item_data.get("type")
+        if item_type == "pose":
+            item_data["pose"] = self._serialize_pose_data(data.get("pose", {}))
+        elif item_type == "range":
+            poses = []
+            for pose_entry in data.get("poses", []):
+                poses.append({
+                    "frame": pose_entry.get("frame"),
+                    "pose": self._serialize_pose_data(pose_entry.get("pose", {}))
+                })
+            item_data["poses"] = poses
+        children = []
+        for index in range(item.childCount()):
+            children.append(self._serialize_tree_item(item.child(index)))
+        if children:
+            item_data["children"] = children
+        return item_data
+
+    def _serialize_tree(self):
+        items = []
+        for index in range(self.pose_list.topLevelItemCount()):
+            items.append(self._serialize_tree_item(self.pose_list.topLevelItem(index)))
+        return items
+
+    def _restore_tree_item(self, item_data, parent=None):
+        item_type = item_data.get("type")
+        name = item_data.get("name")
+        if item_type == "pose":
+            pose_data = self._deserialize_pose_data(item_data.get("pose", {}))
+            item = self._add_pose(pose_data, name, parent=parent, select=False)
+        elif item_type == "range":
+            range_data = []
+            for pose_entry in item_data.get("poses", []):
+                range_data.append({
+                    "frame": pose_entry.get("frame"),
+                    "pose": self._deserialize_pose_data(pose_entry.get("pose", {}))
+                })
+            item = self._add_range_pose(range_data, name, parent=parent, select=False)
+        elif item_type == "folder":
+            item = self._create_folder_item(name=name or "New Folder", parent=parent, select=False)
+        else:
+            item = self._create_folder_item(name=name or "New Folder", parent=parent, select=False)
+
+        for child_data in item_data.get("children", []):
+            self._restore_tree_item(child_data, parent=item)
+
+        return item
+
+    def _clear_pose_tree(self):
+        self.pose_list.clear()
+        return
+
+    def _load_scene_pose_data(self, file_path=None):
+        if file_path is None:
+            file_path = self._get_scene_json_path()
+        if not file_path or os.path.exists(file_path) is False:
+            return
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            traceback.print_exc()
+            cmds.warning("Failed to load pose JSON: {}".format(file_path))
+            return
+
+        if isinstance(payload, dict):
+            version = payload.get("version")
+            items = payload.get("items")
+            if version not in (None, self.SCENE_FILE_VERSION):
+                cmds.warning("Unsupported pose JSON version: {}".format(file_path))
+                return
+        else:
+            items = payload
+
+        if not isinstance(items, list):
+            cmds.warning("Invalid pose JSON format: {}".format(file_path))
+            return
+
+        self._is_loading_scene_data = True
+        try:
+            self._clear_pose_tree()
+            for item_data in items:
+                if not isinstance(item_data, dict):
+                    continue
+                self._restore_tree_item(item_data)
+        finally:
+            self._is_loading_scene_data = False
+
+        if self._get_scene_json_path() is not None:
+            self._save_scene_pose_data()
+        return
+
+    def _save_scene_pose_data(self):
+        if self._is_loading_scene_data:
+            return
+        file_path = self._get_scene_json_path()
+        if file_path is None:
+            if self._warned_scene_unsaved is False:
+                cmds.warning("Save the scene to enable pose JSON saving.")
+                self._warned_scene_unsaved = True
+            return
+
+        self._warned_scene_unsaved = False
+
+        data = {
+            "version": self.SCENE_FILE_VERSION,
+            "items": self._serialize_tree(),
+        }
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except Exception:
+            traceback.print_exc()
+        return
+
+    def _tree_item_changed(self, *args, **kwargs):
+        if self._is_loading_scene_data:
+            return
+        self._save_scene_pose_data()
+        return
+
+    def _tree_structure_changed(self, *args, **kwargs):
+        if self._is_loading_scene_data:
+            return
+        QtCore.QTimer.singleShot(0, self._save_scene_pose_data)
+        return
 
     def _get_sel_item(self):
         return self.pose_list.currentItem()
@@ -506,6 +722,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
                 default_name = "PoseF_{:g}".format(current_frame)
             item = self._add_pose(pose_data, default_name, parent)
             self._edit_item_name(item)
+            self._save_scene_pose_data()
         return
 
     def _click_update(self):
@@ -518,6 +735,33 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         transform = list(data.get("pose", {}).keys())
         pose_data = self.pomezer.get_pose(transform)
         item.setData(0, QtCore.Qt.UserRole, {"type": "pose", "pose": pose_data})
+        self._save_scene_pose_data()
+        return
+
+    def _click_load(self):
+        dialog_dir = None
+        scene_json = self._get_scene_json_path()
+        if scene_json is not None:
+            dialog_dir = os.path.dirname(scene_json)
+        if not dialog_dir:
+            scene_file = self._get_scene_file_path()
+            if scene_file:
+                dialog_dir = os.path.dirname(scene_file)
+        if not dialog_dir:
+            try:
+                dialog_dir = cmds.workspace(query=True, rootDirectory=True)
+            except Exception:
+                dialog_dir = os.path.expanduser("~")
+
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load Pose JSON",
+            dialog_dir,
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+        self._load_scene_pose_data(file_path)
         return
 
     def _click_delete(self):
@@ -525,6 +769,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
         if item is None:
             return
         self._remove_item(item)
+        self._save_scene_pose_data()
         return
 
     def _click_apply(self):
@@ -561,6 +806,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
     def _click_new_folder(self):
         item = self._create_folder_item()
         self._edit_item_name(item)
+        self._save_scene_pose_data()
         return
 
     def _click_delete_tmp(self):
@@ -571,6 +817,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
             if data.get("type") != "folder":
                 removed_item = self.pose_list.takeTopLevelItem(index)
                 del(removed_item)
+        self._save_scene_pose_data()
         return
 
     def _click_range_memorize(self):
@@ -588,6 +835,7 @@ class PoseMemorizerDockableWidget(MayaQWidgetDockableMixin, ScrollWidget):
             default_name = "Range_{:g}_{:g}".format(start_frame, end_frame)
         item = self._add_range_pose(pose_range, default_name, parent)
         self._edit_item_name(item)
+        self._save_scene_pose_data()
         return
 
     def _click_collect_time_range(self):
